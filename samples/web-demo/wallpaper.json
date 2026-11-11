@@ -1,0 +1,9 @@
+{
+  "id": "web-demo",
+  "title": "Theme Web Demo",
+  "kind": "web",
+  "entry": "index.html",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "HTML5 canvas wallpaper that reads window.webwallTheme"
+}

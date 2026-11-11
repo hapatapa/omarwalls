@@ -1,0 +1,9 @@
+{
+  "id": "drift-video",
+  "title": "Drift Video",
+  "kind": "video",
+  "entry": "clip.mp4",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "Looping video wallpaper (h264)"
+}

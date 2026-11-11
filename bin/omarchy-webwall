@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# omarchy-webwall — live wallpapers for Omarchy, from the local wallpaper store.
+#
+# Wallpapers live in ~/.local/share/omarchy-webwall/wallpapers/<id>/ as a
+# wallpaper.json manifest (kind: shader|web|video). Two renderer hosts:
+#   - shader-host  pure-Vulkan GLSL (Shadertoy-style), no Qt
+#   - webwall-host QtWebEngine HTML + QtMultimedia video, on the layer-shell
+#                Background layer
+# Active wallpaper is ~/.local/state/omarchy-webwall/current (manifest path).
+#
+#   omarchy-webwall launch            (Re)launch the saved wallpaper — autostart
+#   omarchy-webwall stop              Stop the live wallpaper
+#   omarchy-webwall menu              Open the thumbnail picker overlay
+#   omarchy-webwall set <id>          Set the wallpaper by store id and relaunch
+#   omarchy-webwall current           Show the active wallpaper (id + kind + title)
+#   omarchy-webwall list              List wallpapers in the store
+#   omarchy-webwall install-samples   Install bundled sample wallpapers
+#   omarchy-webwall import <dir>      Import a wallpaper directory into the store
+#
+set -euo pipefail
+
+SCRIPT_SRC="$(readlink -f "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(cd "$(dirname "$SCRIPT_SRC")/.." && pwd)"
+HOST_BUILD="$PLUGIN_DIR/renderer/build.sh"
+QHOST="$PLUGIN_DIR/renderer/webwall-host"
+SHOST="$PLUGIN_DIR/renderer/shader-host"
+SAMPLES="$PLUGIN_DIR/samples"
+RENDERER_DIR="$PLUGIN_DIR/renderer"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-webwall"
+STORE="$DATA_DIR/wallpapers"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-webwall"
+STATE_FILE="$STATE_DIR/current"
+THEME_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme/colors.toml"
+PLUGIN_ID="hapatapa.omarwalls"
+mkdir -p "$STATE_DIR" "$STORE"
+
+die() { echo "omarchy-webwall: $*" >&2; exit 1; }
+
+# Stop only our own renderers.
+stop_hosts() {
+  pkill -f "[s]hader-host " 2>/dev/null || true
+  pkill -f "[w]ebwall-host " 2>/dev/null || true
+  return 0
+}
+
+build_hosts() {
+  command -v g++ >/dev/null 2>&1 || die "g++ not found (need Qt6 dev packages for web/video)"
+  [[ -x "$QHOST" && -x "$SHOST" ]] || "$HOST_BUILD" >/dev/null 2>&1 || \
+    die "build failed — run $HOST_BUILD rebuild manually"
+}
+
+# manifest <id-or-path> → absolute wallpaper.json path, or empty
+resolve_manifest() {
+  local arg="$1"
+  if [[ -f "$arg" ]]; then
+    if [[ "$(basename "$arg")" == wallpaper.json ]]; then
+      readlink -f "$arg"; return 0
+    elif [[ -f "$arg/wallpaper.json" ]]; then
+      readlink -f "$arg/wallpaper.json"; return 0
+    fi
+  fi
+  local p="$STORE/$arg/wallpaper.json"
+  [[ -f "$p" ]] && { echo "$p"; return 0; }
+  return 1
+}
+
+kind_of() { grep -o '"kind"[^,]*' "$1" | head -1 | grep -o '"[^"]*"' | sed -n 2p | tr -d '"'; }
+
+# true if a process is running this exact command line (argv joined by single
+# spaces). Compares /proc cmdlines as plain strings — no regex, so any path
+# characters are safe.
+running_exact() {
+  local want="$1" pid cmd
+  for pid in /proc/[0-9]*; do
+    [[ -r "$pid/cmdline" ]] || continue
+    cmd="$(tr '\0' ' ' <"$pid/cmdline" 2>/dev/null)" || continue
+    cmd="${cmd% }"
+    [[ "$cmd" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+# Spawn a detached host process. web/video go through uwsm-app to match
+# Omarchy, falling back to a direct spawn only when uwsm-app fails to
+# produce the process (e.g. no systemd user session). The host must NOT
+# inherit the launch lock fd (9>&- below) — it would hold the lock forever.
+spawn_host() {
+  local kind="$1"; shift
+  if [[ "$kind" == "shader" ]]; then
+    setsid -f "$@" 9>&- >/dev/null 2>&1
+    return 0
+  fi
+  setsid -f uwsm-app -- "$@" 9>&- >/dev/null 2>&1
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    running_exact "$*" && return 0
+    sleep 0.25
+  done
+  setsid -f "$@" 9>&- >/dev/null 2>&1
+}
+
+launch_saved() {
+  # Serialize kill→spawn: the shell service reacts to the same state change
+  # with another `launch`, and the two must not interleave (an unguarded
+  # pair can leave two hosts stacked). State is re-read under the lock so a
+  # queued launcher applies the latest choice, and the whole thing is
+  # idempotent — if this exact host is already running, exit without
+  # touching it.
+  (
+    flock -x 9
+    man="$(cat "$STATE_FILE" 2>/dev/null || true)"
+    [[ -n "$man" ]] || { stop_hosts; exit 0; }
+    [[ -f "$man" ]] || die "state points at missing manifest: $man"
+    kind="$(kind_of "$man")"
+    cmd=()
+    case "$kind" in
+      shader) cmd=("$SHOST" "$man" "$STATE_FILE") ;;
+      web|video) cmd=("$QHOST" "$kind" "$man" "$STATE_FILE" "$THEME_FILE" "$RENDERER_DIR") ;;
+      *) die "unknown wallpaper kind '$kind' in $man";;
+    esac
+    build_hosts
+    running_exact "${cmd[*]}" && exit 0
+    stop_hosts; sleep 0.3
+    spawn_host "$kind" "${cmd[@]}"
+    sleep 0.2
+  ) 9>"$STATE_DIR/launch.lock"
+}
+
+cmd_launch() { [[ -s "$STATE_FILE" ]] || die "no wallpaper saved (set one with 'omarchy-webwall set <id>')"; launch_saved; }
+cmd_stop()   { ( flock -x 9; stop_hosts ) 9>"$STATE_DIR/launch.lock"; }
+
+cmd_current() {
+  local man; man="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [[ -z "$man" ]]; then echo "(none)"; return 0; fi
+  [[ -f "$man" ]] || { echo "$man (missing!)"; return 0; }
+  local id kind title
+  id="$(basename "$(dirname "$man")")"
+  kind="$(kind_of "$man")"
+  title="$(grep -o '"title"[^,]*' "$man" | head -1 | grep -o '"[^"]*"' | sed -n 2p | tr -d '"')"
+  echo "$id ($kind) — ${title:-untitled}"
+}
+
+cmd_list() {
+  local n=0
+  for j in "$STORE"/*/wallpaper.json; do
+    [[ -f "$j" ]] || continue
+    local id kind title
+    id="$(basename "$(dirname "$j")")"
+    kind="$(kind_of "$j")"
+    title="$(grep -o '"title"[^,]*' "$j" | head -1 | grep -o '"[^"]*"' | sed -n 2p | tr -d '"')"
+    printf '  %-12s %-7s %s\n' "$id" "$kind" "${title:-untitled}"
+    n=$((n+1))
+  done
+  (( n > 0 )) || echo "  (store is empty — run 'omarchy-webwall install-samples')"
+}
+
+cmd_set() {
+  local man id
+  man="$(resolve_manifest "${1:-}")" || die "no wallpaper '$1' in $STORE"
+  id="$(basename "$(dirname "$man")")"
+  printf '%s' "$man" > "$STATE_FILE"
+  echo "set $id"
+  launch_saved
+}
+
+install_samples() {
+  local src k
+  for src in "$SAMPLES"/*/; do
+    [[ -d "$src" ]] || continue
+    k="$(basename "$src")"
+    cp -r "$src" "$STORE/$k"
+  done
+  echo "samples installed into $STORE"
+}
+
+cmd_import() {
+  local src="${1:-}"
+  [[ -n "$src" ]] || die "usage: omarchy-webwall import <dir>"
+  local man="$src/wallpaper.json"
+  [[ -f "$man" ]] || die "no wallpaper.json in $src"
+  local id; id="$(basename "$(readlink -f "$src")")"
+  cp -r "$src" "$STORE/$id"
+  echo "imported as $id"
+}
+
+cmd_menu() {
+  if command -v omarchy-shell >/dev/null 2>&1 \
+     && omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1; then
+    return 0
+  fi
+  die "could not summon picker (omarchy-shell not available)"
+}
+
+case "${1:-}" in
+  launch)                cmd_launch;;
+  stop)                  cmd_stop;;
+  current|status)        cmd_current;;
+  set)                   cmd_set "${2:-}";;
+  list)                  cmd_list;;
+  install-samples)       install_samples;;
+  import)                cmd_import "${2:-}";;
+  menu|picker|om)        cmd_menu;;
+  ""|-h|--help)          echo "usage: omarchy-webwall {launch|stop|menu|set <id>|current|list|install-samples|import <dir>}";;
+  *)                     die "unknown command: $1";;
+esac

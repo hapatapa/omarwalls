@@ -1,0 +1,9 @@
+{
+  "id": "plasma",
+  "title": "Plasma",
+  "kind": "shader",
+  "entry": "plasma.frag",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "Colorful plasma field"
+}

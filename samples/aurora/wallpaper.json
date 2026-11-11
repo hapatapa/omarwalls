@@ -1,0 +1,9 @@
+{
+  "id": "aurora",
+  "title": "Aurora",
+  "kind": "shader",
+  "entry": "aurora.frag",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "Animated northern-lights curtain"
+}

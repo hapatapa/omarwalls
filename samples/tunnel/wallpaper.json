@@ -1,0 +1,9 @@
+{
+  "id": "tunnel",
+  "title": "Tunnel",
+  "kind": "shader",
+  "entry": "tunnel.frag",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "Perspective tunnel with rotating rays"
+}

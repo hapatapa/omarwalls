@@ -1,0 +1,4 @@
+# Built renderer hosts (compile them with renderer/build.sh; the CLI
+# auto-builds them on first launch if they are missing)
+renderer/webwall-host
+renderer/shader-host
