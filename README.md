@@ -22,9 +22,13 @@ Enter — is summoned from the shell or the CLI.
 omarchy plugin add https://github.com/hapatapa/omarwalls.git --enable --yes
 # the static built-in background would fight the live wallpaper for the layer:
 omarchy plugin disable omarchy.background
-# optional: put the CLI on PATH (~/.local/bin is already in it on Omarchy)
-ln -s ~/.config/omarchy/plugins/hapatapa.omarwalls/bin/omarchy-webwall ~/.local/bin/omarchy-webwall
-# install the bundled sample wallpapers into your store
+```
+
+The service self-installs the rest on first load: it links the CLI into
+`~/.local/bin`, adds the login autostart, and writes the
+**menu > Style > Omarwalls** row. Then install the bundled samples:
+
+```bash
 omarchy-webwall install-samples
 ```
 
@@ -78,10 +82,11 @@ manifest path; empty = stopped).
 
 ### Shader wallpapers
 
-`entry` is a GLSL fragment shader with Shadertoy conventions — provide
-`void mainImage(out vec4 fragColor, in vec2 fragCoord)` and use
-`iResolution`, `iTime`, `iFrame`, `iMouse`, `iDate`. The Omarchy theme is
-available as a `uniform vec4 u_theme[16]`:
+`entry` is a GLSL fragment shader. Shadertoy conventions are supported —
+provide `void mainImage(out vec4 fragColor, in vec2 fragCoord)` and use
+`iResolution`, `iTime`, `iFrame`, `iMouse`, `iDate` — and so are
+self-contained shaders that define `void main()` and write `fragColor`
+directly. The Omarchy theme is available as a `uniform vec4 u_theme[16]`:
 
 | Slot | Meaning | Fallback source |
 |---|---|---|
@@ -141,8 +146,12 @@ needed for shader-only setups; Qt is needed for web/video. Pass `rebuild` to
 ## Samples
 
 `omarchy-webwall install-samples` copies the bundled wallpapers into your
-store: `aurora`, `plasma`, `tunnel` (shaders), `web-demo` (theme web demo),
-`drift-video` (video).
+store: `aurora`, `plasma`, `tunnel`, `tunnel-theme` (shaders), `web-demo`
+(theme web demo), `drift-video` (video).
+
+`tunnel` is a port of the raymarched “I like tunnels” scene from the author's
+Wallpaper Engine workshop item; `tunnel-theme` runs the same scene with its
+two light streams taken from the active Omarchy palette.
 
 ## License
 

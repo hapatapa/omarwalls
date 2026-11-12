@@ -17,11 +17,30 @@ Item {
   property var shell: null
 
   readonly property string stateHome: (Quickshell.env("HOME") || "") + "/.local/state/omarchy-webwall/current"
+  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string cliPath: {
     var u = Qt.resolvedUrl("bin/omarchy-webwall").toString()
     return u.replace(/^file:\/\//, "")
   }
   property string lastUrl: ""
+
+  // `omarchy plugin add` has no post-install hook: the first time the service
+  // loads, link the CLI, add the login autostart and write the menu > Style >
+  // Omarwalls row. install.sh is idempotent, and the guard keeps every later
+  // shell start from rewriting the menu file.
+  Process {
+    running: true
+    command: ["bash", "-c",
+      'test -x "$HOME/.local/bin/omarchy-webwall"'
+      + ' && grep -q \'"style.hapatapa-omarwalls".*"label":"Omarwalls"\' "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" 2>/dev/null'
+      + ' || bash ' + JSON.stringify(root.pluginDir + "/install.sh")]
+    stdout: StdioCollector {
+      onStreamFinished: if (text.trim()) console.log("omarwalls setup:", text.trim())
+    }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim()) console.warn("omarwalls setup:", text.trim())
+    }
+  }
 
   function openPicker() {
     if (root.shell && typeof root.shell.summon === "function") {

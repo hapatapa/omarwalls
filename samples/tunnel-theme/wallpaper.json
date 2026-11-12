@@ -1,0 +1,9 @@
+{
+  "id": "tunnel-theme",
+  "title": "Tunnel (Theme)",
+  "kind": "shader",
+  "entry": "tunnel.frag",
+  "preview": "preview.png",
+  "author": "hapatapa",
+  "description": "The raymarched tunnel, lit by the active Omarchy theme colours"
+}

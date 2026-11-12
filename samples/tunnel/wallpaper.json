@@ -5,5 +5,5 @@
   "entry": "tunnel.frag",
   "preview": "preview.png",
   "author": "hapatapa",
-  "description": "Perspective tunnel with rotating rays"
+  "description": "Raymarched glowing tunnel with coloured light streams"
 }

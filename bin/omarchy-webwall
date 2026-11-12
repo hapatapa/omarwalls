@@ -169,6 +169,8 @@ install_samples() {
   for src in "$SAMPLES"/*/; do
     [[ -d "$src" ]] || continue
     k="$(basename "$src")"
+    # replace, never nest: a repeated install used to create <id>/<id>/
+    rm -rf "$STORE/$k"
     cp -r "$src" "$STORE/$k"
   done
   echo "samples installed into $STORE"
