@@ -37,10 +37,10 @@ static void die(const char *m) { fprintf(stderr, "SHADERHOST: %s\n", m); exit(1)
 // UBO layout (must match fragment shader block)
 //   layout(set=0, binding=0) uniform Uniforms {
 //     vec3 iResolution; float _pad0; float iTime; float iFrame;
-//     vec4 iMouse; vec4 iDate; vec4 u_theme[16];
+//     vec4 iMouse; vec4 iDate; vec4 u_theme[24];
 //   };
 // ---------------------------------------------------------------------------
-struct UBO {                       // std140 layout, 28 floats total
+struct UBO {                       // std140 layout
     float iResolution[3];          // vec3,   offset 0
     float _pad0;                   //         offset 12 (helps alignment)
     float iTime;                   //         offset 16
@@ -48,7 +48,7 @@ struct UBO {                       // std140 layout, 28 floats total
     float _pad1[2];                // align iMouse vec4 to 32 (24->32)
     float iMouse[4];               // vec4,   offset 32
     float iDate[4];                // vec4,   offset 48
-    float u_theme[16][4];          // vec4 x16, offset 64 .. 304
+    float u_theme[24][4];          // vec4 x24, offset 64 .. 448
 };
 
 // ---------------------------------------------------------------------------
@@ -162,14 +162,22 @@ static VkPipeline buildPipeline(const std::string &fragSrc, std::string *err) {
         "  float iFrame;\n"
         "  vec4  iMouse;\n"
         "  vec4  iDate;\n"
-        "  vec4  u_theme[16];\n"
+        "  vec4  u_theme[24];\n"
         "} u;\n"
         "#define iResolution u.iResolution\n"
         "#define iTime       u.iTime\n"
         "#define iFrame      u.iFrame\n"
         "#define iMouse      u.iMouse\n"
         "#define iDate       u.iDate\n"
-        "#define u_theme     u.u_theme\n";
+        "#define u_theme     u.u_theme\n"
+        // Unprefixed semantic aliases in slots 16..21: the color0..15 palette
+        // override never touches these, so they stay the real UI colors.
+        "#define u_background u_theme[16]\n"
+        "#define u_foreground u_theme[17]\n"
+        "#define u_accent     u_theme[18]\n"
+        "#define u_muted      u_theme[19]\n"
+        "#define u_cursor     u_theme[20]\n"
+        "#define u_selection  u_theme[21]\n";
 
     static const char *kVtx = R"GLSL(
 #version 450
@@ -400,6 +408,9 @@ static void recordFrame(VkCommandBuffer cb, uint32_t imgIdx) {
 //   background → [0], foreground → [1], accent → [2], muted → [3],
 //   cursor → [4], selection → [5]; color0..color15 override [0..15] so the
 //   full terminal palette is exposed to shaders.
+//   [16]..[21] keep the unprefixed semantic colors (background, foreground,
+//   accent, muted, cursor, selection), which the palette override never
+//   touches — use these (u_accent, u_background, …) for UI-colored visuals.
 // ---------------------------------------------------------------------------
 static int hexVal(char c) {
     if (c>='0'&&c<='9') return c-'0';
@@ -486,6 +497,24 @@ static void loadTheme(UBO &ubo) {
         std::string k="color"+std::to_string(i);
         if (kv.count(k)) themeColor(kv[k], ubo.u_theme[i]);
     }
+
+    // Unprefixed semantic colors, kept out of the palette override's reach so
+    // shaders can ask for the real UI accent/background/etc. Cursor and
+    // selection fall back the way the web renderer does (cursor -> accent,
+    // selection -> accent), never to a foreign default.
+    std::string bg  = pick("background","bg","#1e1e2e");
+    std::string fg  = pick("foreground","fg","#cdd6f4");
+    std::string acc = pick2("accent", "#89b4fa");
+    std::string mut = kv.count("muted") ? kv["muted"]
+                    : (kv.count("color8") ? kv["color8"] : "#6c7086");
+    std::string cursorCol = kv.count("cursor") ? kv["cursor"] : acc;
+    std::string sel = kv.count("selection") ? kv["selection"] : acc;
+    themeColor(bg,  ubo.u_theme[16]);
+    themeColor(fg,  ubo.u_theme[17]);
+    themeColor(acc, ubo.u_theme[18]);
+    themeColor(mut, ubo.u_theme[19]);
+    themeColor(cursorCol, ubo.u_theme[20]);
+    themeColor(sel, ubo.u_theme[21]);
 }
 
 // ---------------------------------------------------------------------------

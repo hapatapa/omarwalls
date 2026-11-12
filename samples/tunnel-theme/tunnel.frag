@@ -1,8 +1,8 @@
 // Tunnel (Theme) — the raymarched tunnel, coloured from the active Omarchy
 // theme. Ported from hapatapa's Wallpaper Engine scene "I like tunnels";
-// the two light streams use u_theme[2] (accent) and u_theme[4] (cursor),
-// with a faint u_theme[0] background tint, so it follows every theme change
-// without a restart.
+// the two light streams use the unprefixed u_accent / u_cursor colors and a
+// faint u_background tint (not the color0..15 terminal palette), so it follows
+// every theme change without a restart.
 
 vec3 path(float z) {
     return vec3(cos(z * 0.015) * 16.0 + cos(z * 0.006) * 64.0,
@@ -40,8 +40,8 @@ float map(vec3 p) {
     float cool = length(p_local - s_z.y * 12.0) - 1.0;
 
     // palette-driven light streams (brightness matched to the original)
-    vec3 lightA = u_theme[2].rgb;
-    vec3 lightB = u_theme[4].rgb;
+    vec3 lightA = u_accent.rgb;
+    vec3 lightB = u_cursor.rgb;
     lights += vec4(lightA * 20.0, 0.0) / (0.1 + abs(warm) * 0.1);
     lights += vec4(lightB * 20.0, 0.0) / (0.1 + abs(cool) * 0.1);
 
@@ -93,7 +93,7 @@ void main() {
     o.z = pow(o.z, 1.0 / 1.2);
 
     // deep background follows the theme without lifting the blacks too far
-    o.xyz += u_theme[0].rgb * 0.12;
+    o.xyz += u_background.rgb * 0.12;
 
     fragColor = vec4(o.xyz, 1.0);
 }

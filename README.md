@@ -7,7 +7,7 @@ theme state).
 
 | Kind | Renderer | Notes |
 |---|---|---|
-| `shader` | `shader-host` (pure Vulkan, no Qt) | Shadertoy-style GLSL; theme arrives as a `u_theme[16]` uniform array |
+| `shader` | `shader-host` (pure Vulkan, no Qt) | Shadertoy-style GLSL; theme arrives as a `u_theme[24]` uniform array |
 | `web` | `webwall-host` (QtWebEngine) | Full-page HTML5/canvas; theme is injected as `window.webwallTheme` |
 | `video` | `webwall-host` (QtMultimedia) | Loops muted, aspect-cropped to the screen |
 
@@ -86,20 +86,26 @@ manifest path; empty = stopped).
 provide `void mainImage(out vec4 fragColor, in vec2 fragCoord)` and use
 `iResolution`, `iTime`, `iFrame`, `iMouse`, `iDate` — and so are
 self-contained shaders that define `void main()` and write `fragColor`
-directly. The Omarchy theme is available as a `uniform vec4 u_theme[16]`:
+directly. The active Omarchy theme is available as `uniform vec4 u_theme[24]`:
 
-| Slot | Meaning | Fallback source |
-|---|---|---|
-| `u_theme[0]` | background | `color0` |
-| `u_theme[1]` | foreground | `color1` |
-| `u_theme[2]` | accent | `color2` |
-| `u_theme[3]` | muted | `muted` |
-| `u_theme[4]` | cursor | `cursor` |
-| `u_theme[5]` | selection | `selection` |
-| `u_theme[0..15]` | terminal palette | `color0..color15` (override the slots above) |
+| Slot | Meaning |
+|---|---|
+| `u_theme[0..5]` | seeded with `background`, `foreground`, `accent`, `muted`, `cursor`, `selection`, then overridden by `color0..color5` |
+| `u_theme[6..15]` | `color6..color15` of the terminal palette |
+| `u_theme[16]` | real `background` |
+| `u_theme[17]` | real `foreground` |
+| `u_theme[18]` | real `accent` |
+| `u_theme[19]` | real `muted` |
+| `u_theme[20]` | real `cursor` (falls back to `accent`) |
+| `u_theme[21]` | real `selection` |
+| `u_theme[22..23]` | reserved (zero) |
 
-i.e. the semantic slots are filled first, then `color0..color15` override
-slots 0–15, so the full terminal palette is exposed to shaders.
+Since most Omarchy themes define the full `color0..color15` palette, slots 0–15
+are the terminal palette at runtime. Slots 16–21 are never touched by that
+override and always hold the real UI colors, also exposed as the aliases
+`u_background`, `u_foreground`, `u_accent`, `u_muted`, `u_cursor` and
+`u_selection` — use those when a wallpaper should follow the UI accent rather
+than the terminal palette.
 
 ### Web wallpapers
 
@@ -151,7 +157,9 @@ store: `aurora`, `plasma`, `tunnel`, `tunnel-theme` (shaders), `web-demo`
 
 `tunnel` is a port of the raymarched “I like tunnels” scene from the author's
 Wallpaper Engine workshop item; `tunnel-theme` runs the same scene with its
-two light streams taken from the active Omarchy palette.
+two light streams taken from the theme's real `accent` and `cursor` colors
+(falling back to the accent), and its background tint from the real
+`background` — not from the `color0..15` terminal palette.
 
 ## License
 

@@ -1,6 +1,6 @@
 // Aurora — shadertoy-style, animated northern-lights curtain.
 // Uses only Shadertoy uniforms so it works in the Vulkan shader-host.
-// iResolution, iTime, iFrame, iMouse, iDate + u_theme[16] are provided.
+// iResolution, iTime, iFrame, iMouse, iDate + u_theme[24] are provided.
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 uv = (2.0 * fragCoord - iResolution.xy) / iResolution.y;
     float t = iTime * 0.4;
