@@ -14,6 +14,8 @@
 #   omarchy-webwall set <id>          Set the wallpaper by store id and relaunch
 #   omarchy-webwall current           Show the active wallpaper (id + kind + title)
 #   omarchy-webwall list              List wallpapers in the store
+#   omarchy-webwall scale [<factor>]  Render scale (0.1..1.0, or 'off' for the
+#                                     wallpaper's own value); lowers GPU load
 #   omarchy-webwall install-samples   Install bundled sample wallpapers
 #   omarchy-webwall import <dir>      Import a wallpaper directory into the store
 #
@@ -106,7 +108,9 @@ launch_saved() {
   # pair can leave two hosts stacked). State is re-read under the lock so a
   # queued launcher applies the latest choice, and the whole thing is
   # idempotent — if this exact host is already running, exit without
-  # touching it.
+  # touching it. Pass `1` to restart even when the command line is unchanged
+  # (settings such as the render scale live outside the command line).
+  local force="${1:-0}"
   (
     flock -x 9
     man="$(cat "$STATE_FILE" 2>/dev/null || true)"
@@ -120,7 +124,7 @@ launch_saved() {
       *) die "unknown wallpaper kind '$kind' in $man";;
     esac
     build_hosts
-    running_exact "${cmd[*]}" && exit 0
+    if [[ "$force" != "1" ]] && running_exact "${cmd[*]}"; then exit 0; fi
     stop_hosts; sleep 0.3
     spawn_host "$kind" "${cmd[@]}"
     sleep 0.2
@@ -186,6 +190,34 @@ cmd_import() {
   echo "imported as $id"
 }
 
+cmd_scale() {
+  local arg="${1:-}" man def
+  man="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  def="$(grep -o '"renderScale"[[:space:]]*:[[:space:]]*[0-9.]*' "$man" 2>/dev/null \
+         | grep -o '[0-9.]*$' || true)"
+  case "$arg" in
+    ""|show)
+      if [[ -f "$STATE_DIR/render-scale" ]]; then
+        echo "render scale: $(cat "$STATE_DIR/render-scale") (override; wallpaper default ${def:-1.0})"
+      else
+        echo "render scale: ${def:-1.0} (wallpaper default)"
+      fi
+      return 0;;
+    off|auto|default)
+      rm -f "$STATE_DIR/render-scale"
+      echo "render scale: ${def:-1.0} (wallpaper default)";;
+    *)
+      [[ "$arg" =~ ^[0-9]*\.?[0-9]+$ ]] || die "render scale must be a number between 0.1 and 1.0, or 'off'"
+      awk -v v="$arg" 'BEGIN { exit !(v >= 0.1 && v <= 1.0) }' \
+        || die "render scale must be between 0.1 and 1.0, or 'off'"
+      printf '%s' "$arg" > "$STATE_DIR/render-scale"
+      echo "render scale: $arg";;
+  esac
+  # shader-host reads the scale at startup; restart it to apply (the command
+  # line does not change, so ask launch_saved to force it).
+  if [[ -s "$STATE_FILE" ]]; then launch_saved 1; fi
+}
+
 cmd_menu() {
   if command -v omarchy-shell >/dev/null 2>&1 \
      && omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1; then
@@ -202,7 +234,8 @@ case "${1:-}" in
   list)                  cmd_list;;
   install-samples)       install_samples;;
   import)                cmd_import "${2:-}";;
+  scale)                 cmd_scale "${2:-}";;
   menu|picker|om)        cmd_menu;;
-  ""|-h|--help)          echo "usage: omarchy-webwall {launch|stop|menu|set <id>|current|list|install-samples|import <dir>}";;
+  ""|-h|--help)          echo "usage: omarchy-webwall {launch|stop|menu|set <id>|current|list|scale [<factor>|off]|install-samples|import <dir>}";;
   *)                     die "unknown command: $1";;
 esac

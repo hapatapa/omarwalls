@@ -54,6 +54,7 @@ omarchy-webwall menu               Open the thumbnail picker overlay
 omarchy-webwall set <id>           Set the wallpaper by store id and relaunch
 omarchy-webwall current            Show the active wallpaper (id + kind + title)
 omarchy-webwall list               List wallpapers in the store
+omarchy-webwall scale [<factor>]   Render scale 0.1–1.0 (or `off`); lowers GPU load
 omarchy-webwall install-samples    Install bundled sample wallpapers
 omarchy-webwall import <dir>       Import a wallpaper directory into the store
 ```
@@ -79,6 +80,31 @@ manifest path; empty = stopped).
 
 `kind` + `entry` are what the hosts read; `preview` shows in the picker.
 `omarchy-webwall import <dir>` copies a prepared directory into the store.
+
+### Render scale
+
+Heavy fragment shaders (raymarchers such as `tunnel-theme`) can render below
+the screen resolution and let the compositor upscale the result, which cuts
+GPU work roughly with the square of the factor:
+
+```json
+"renderScale": 0.75
+```
+
+`renderScale` (0.1–1.0) is a per-wallpaper default. The global override in
+`~/.local/state/omarchy-webwall/render-scale` wins when that file exists, and
+is what the CLI writes:
+
+```bash
+omarchy-webwall scale 0.5     # render at half resolution
+omarchy-webwall scale off     # back to the wallpaper's own value
+omarchy-webwall scale         # show the effective value
+```
+
+The host restarts to apply it. `iResolution` reports the render size (that is
+what shaders key their work off), while the image still fills the screen —
+`wp_viewporter` stretches the smaller buffer to the layer surface. Only shader
+wallpapers use this; web/video already draw at native size.
 
 ### Shader wallpapers
 

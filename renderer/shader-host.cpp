@@ -3,6 +3,9 @@
 //
 // Usage: shader-host <wallpaper.json> <state-file>
 //   - reads wallpaper.json for "entry" (relative shader path)
+//   - optional "renderScale" in wallpaper.json (0.1..1.0) renders the shader at
+//     a lower resolution and upscales it with wp_viewporter; a global override
+//     exists in ~/.local/state/omarchy-webwall/render-scale
 //   - creates a layer-shell BACKGROUND surface on the compositor
 //   - renders a fullscreen triangle with the compiled shader via Vulkan
 //   - watches the shader file + Omarchy colors.toml for live reload
@@ -19,11 +22,14 @@
 #include <sstream>
 #include <fstream>
 #include <map>
+#include <cmath>
+#include <algorithm>
 
 #include <wayland-client.h>
 #define namespace namespace_
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #undef namespace
+#include "viewporter-client-protocol.h"
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_wayland.h>
 #include <shaderc/shaderc.h>
@@ -62,9 +68,13 @@ static struct wl_display *g_display;
 static struct wl_registry *g_registry;
 static struct wl_compositor *g_compositor;
 static struct zwlr_layer_shell_v1 *g_layerShell;
+static struct wp_viewporter *g_viewporter;
+static struct wp_viewport *g_viewport;
 static struct wl_surface *g_wlSurface;
 static struct zwlr_layer_surface_v1 *g_layerSurface;
-static int g_w = 0, g_h = 0;
+static int g_w = 0, g_h = 0;                 // layer (surface) size
+static int g_rw = 0, g_rh = 0;               // render (buffer) size, <= g_w/g_h
+static double g_renderScale = 1.0;           // 0.1 .. 1.0
 static uint32_t g_serial = 0;
 static int g_resizePend = 0;
 
@@ -111,6 +121,8 @@ static void reg_global(void*, struct wl_registry *reg, uint32_t name, const char
         g_compositor = (struct wl_compositor*)wl_registry_bind(reg, name, &wl_compositor_interface, 4);
     else if (!strcmp(iface, zwlr_layer_shell_v1_interface.name))
         g_layerShell = (struct zwlr_layer_shell_v1*)wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 3);
+    else if (!strcmp(iface, wp_viewporter_interface.name))
+        g_viewporter = (struct wp_viewporter*)wl_registry_bind(reg, name, &wp_viewporter_interface, 1);
 }
 static void reg_remove(void*, struct wl_registry*, uint32_t) {}
 static const struct wl_registry_listener registryListener = {
@@ -214,6 +226,11 @@ void main() {
     VkRect2D scissor{{0,0},{(uint32_t)g_w,(uint32_t)g_h}};
     VkPipelineViewportStateCreateInfo vpState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vpState.viewportCount=1; vpState.pViewports=&vp; vpState.scissorCount=1; vpState.pScissors=&scissor;
+    // The render size changes with the render scale and on layer resize, so
+    // viewport/scissor are dynamic and set per frame in recordFrame().
+    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynState.dynamicStateCount=2; dynState.pDynamicStates=dynStates;
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode=VK_POLYGON_MODE_FILL; rs.cullMode=VK_CULL_MODE_NONE; rs.lineWidth=1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -228,6 +245,7 @@ void main() {
     gpi.pVertexInputState=&vi; gpi.pInputAssemblyState=&ia;
     gpi.pViewportState=&vpState; gpi.pRasterizationState=&rs;
     gpi.pMultisampleState=&ms; gpi.pColorBlendState=&cb;
+    gpi.pDynamicState=&dynState;
     gpi.layout=g_plLayout; gpi.renderPass=g_pass;
     VkPipeline p;
     VkResult r = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &gpi, nullptr, &p);
@@ -343,22 +361,31 @@ static void initVulkan() {
 
 static void createSwapchain() {
     if (g_swapchain) { vkDestroySwapchainKHR(g_dev, g_swapchain, nullptr); g_swapchain=VK_NULL_HANDLE; }
-    VkSurfaceCapabilitiesKHR cap;
-    VKOK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pdev, g_surface, &cap));
-    uint32_t w=(uint32_t)g_w, h=(uint32_t)g_h;
-    if (cap.currentExtent.width!=0xFFFFFFFFu) { w=cap.currentExtent.width; h=cap.currentExtent.height; }
+    // The layer surface is always g_w x g_h; the swapchain may be smaller and
+    // is stretched to the surface by wp_viewport_set_destination(). On a Wayland
+    // layer surface WSI reports currentExtent as "undefined", so the size comes
+    // from the layer configure, not from surface capabilities.
+    uint32_t w=(uint32_t)std::max(1, g_rw), h=(uint32_t)std::max(1, g_rh);
     VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     sci.surface=g_surface; sci.minImageCount=2;
     sci.imageFormat=g_fmt; sci.imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     sci.imageExtent={w,h}; sci.imageArrayLayers=1;
     sci.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     sci.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE;
-    sci.preTransform=cap.currentTransform; sci.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    sci.preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR; sci.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     uint32_t npm=0; vkGetPhysicalDeviceSurfacePresentModesKHR(g_pdev, g_surface, &npm, nullptr);
     std::vector<VkPresentModeKHR> pms(npm); vkGetPhysicalDeviceSurfacePresentModesKHR(g_pdev, g_surface, &npm, pms.data());
     sci.presentMode=VK_PRESENT_MODE_FIFO_KHR;
     for (auto m : pms) if (m==VK_PRESENT_MODE_MAILBOX_KHR) { sci.presentMode=m; break; }
-    VKOK(vkCreateSwapchainKHR(g_dev, &sci, nullptr, &g_swapchain));
+    VkResult scr = vkCreateSwapchainKHR(g_dev, &sci, nullptr, &g_swapchain);
+    if (scr != VK_SUCCESS && g_renderScale < 1.0) {
+        // Some WSI implementations insist on the configured surface extent.
+        fprintf(stderr, "SHADERHOST: scaled swapchain failed (rc=%d); falling back to 1.0\n", (int)scr);
+        g_renderScale = 1.0; g_rw = g_w; g_rh = g_h;
+        sci.imageExtent = {(uint32_t)std::max(1, g_rw), (uint32_t)std::max(1, g_rh)};
+        scr = vkCreateSwapchainKHR(g_dev, &sci, nullptr, &g_swapchain);
+    }
+    if (scr != VK_SUCCESS) die("vkCreateSwapchainKHR failed");
 
     for (auto v:g_views) vkDestroyImageView(g_dev, v, nullptr); g_views.clear();
     for (auto f:g_fbs) vkDestroyFramebuffer(g_dev, f, nullptr); g_fbs.clear();
@@ -391,11 +418,15 @@ static void recordFrame(VkCommandBuffer cb, uint32_t imgIdx) {
     VKOK(vkBeginCommandBuffer(cb, &bi));
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass=g_pass; rbi.framebuffer=g_fbs[imgIdx];
-    rbi.renderArea={{0,0},{(uint32_t)g_w,(uint32_t)g_h}};
+    rbi.renderArea={{0,0},{(uint32_t)g_rw,(uint32_t)g_rh}};
     VkClearValue cv; cv.color={{0.05f,0.06f,0.07f,1.0f}};
     rbi.clearValueCount=1; rbi.pClearValues=&cv;
     vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline);
+    VkViewport vp{0.0f, 0.0f, (float)g_rw, (float)g_rh, 0.0f, 1.0f};
+    VkRect2D scissor{{0,0},{(uint32_t)g_rw,(uint32_t)g_rh}};
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    vkCmdSetScissor(cb, 0, 1, &scissor);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_plLayout, 0, 1, &g_descSet, 0, nullptr);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRenderPass(cb);
@@ -530,6 +561,71 @@ static uint64_t nowMs() {
     return (uint64_t)ts.tv_sec*1000 + ts.tv_nsec/1000000;
 }
 
+// ---------------------------------------------------------------------------
+// render scale
+//   wallpaper.json: "renderScale": 0.1 .. 1.0   (per wallpaper)
+//   $XDG_STATE_HOME/omarchy-webwall/render-scale (global override; wins when
+//   present, "off" or a removed file restores the manifest value)
+// The shader renders into a smaller swapchain, which wp_viewporter stretches
+// to the full layer surface. Everything else (uniforms, screenshots) behaves
+// as if the wallpaper were full size, except iResolution, which is the render
+// size — that is what shaders key their work off.
+// ---------------------------------------------------------------------------
+static std::string stateDir() {
+    const char *xdg = getenv("XDG_STATE_HOME");
+    std::string base = (xdg && *xdg) ? xdg : (std::string(getenv("HOME") ? getenv("HOME") : "") + "/.local/state");
+    return base + "/omarchy-webwall";
+}
+static bool parseRenderScale(const std::string &text, double *out) {
+    // accepts a bare number ("0.75") as well as wallpaper.json's
+    // "renderScale": 0.75
+    size_t p = text.find("\"renderScale\"");
+    if (p != std::string::npos) {
+        p = text.find(':', p + 13);
+        if (p == std::string::npos) return false;
+        ++p;
+    } else {
+        p = 0;
+    }
+    const char *s = text.c_str() + p;
+    char *end = nullptr;
+    double v = strtod(s, &end);
+    if (end == s) return false;
+    *out = v;
+    return true;
+}
+static void resolveRenderScale() {
+    double s = 1.0;
+    double v;
+    if (parseRenderScale(readFile(g_manifestPath), &v)) s = v;
+
+    std::string ov = readFile(stateDir() + "/render-scale");
+    if (!ov.empty()) {
+        // trim whitespace/newlines; "off"/"auto" = no override
+        size_t a = ov.find_first_not_of(" \t\r\n");
+        size_t b = ov.find_last_not_of(" \t\r\n");
+        std::string t = (a == std::string::npos) ? std::string() : ov.substr(a, b - a + 1);
+        if (t == "off" || t == "auto" || t == "default") {
+            // keep the manifest value
+        } else if (parseRenderScale(t, &v)) {
+            s = v;
+        } else {
+            fprintf(stderr, "SHADERHOST: ignoring bad render-scale override '%s'\n", t.c_str());
+        }
+    }
+
+    if (s < 0.1) s = 0.1;
+    if (s > 1.0) s = 1.0;
+    g_renderScale = s;
+}
+static void updateRenderSize() {
+    if (g_w <= 0 || g_h <= 0) return;
+    int rw = (int)std::lround((double)g_w * g_renderScale);
+    int rh = (int)std::lround((double)g_h * g_renderScale);
+    g_rw = std::min(g_w, std::max(1, rw));
+    g_rh = std::min(g_h, std::max(1, rh));
+}
+
 // Resolve "entry" (relative path) in wallpaper.json against the manifest dir.
 static bool resolveEntry() {
     std::string man = readFile(g_manifestPath);
@@ -560,7 +656,7 @@ static uint32_t snapMemType(VkBuffer buf, VkMemoryPropertyFlags flags) {
 }
 
 static int snapshot(const std::string &out, int w, int h, double t0) {
-    g_w=w; g_h=h; g_fmt=VK_FORMAT_R8G8B8A8_UNORM;
+    g_w=w; g_h=h; g_rw=w; g_rh=h; g_fmt=VK_FORMAT_R8G8B8A8_UNORM;
 
     // instance without any surface extensions
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -709,6 +805,10 @@ static int snapshot(const std::string &out, int w, int h, double t0) {
     rbi.clearValueCount=1; rbi.pClearValues=&cv;
     vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline);
+    VkViewport svp{0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
+    VkRect2D ssc{{0,0},{(uint32_t)w,(uint32_t)h}};
+    vkCmdSetViewport(cb, 0, 1, &svp);
+    vkCmdSetScissor(cb, 0, 1, &ssc);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_plLayout, 0, 1, &g_descSet, 0, nullptr);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRenderPass(cb);
@@ -803,6 +903,23 @@ int main(int argc, char **argv) {
     zwlr_layer_surface_v1_ack_configure(g_layerSurface, g_serial);
     fprintf(stderr, "SHADERHOST: configured %dx%d\n", g_w, g_h);
 
+    // render scale: per-wallpaper value, global override wins
+    resolveRenderScale();
+    updateRenderSize();
+    if (g_renderScale < 1.0) {
+        if (g_viewporter) {
+            g_viewport = wp_viewporter_get_viewport(g_viewporter, g_wlSurface);
+            wp_viewport_set_destination(g_viewport, g_w, g_h);
+        } else {
+            fprintf(stderr, "SHADERHOST: no wp_viewporter, render scale forced to 1.0\n");
+            g_renderScale = 1.0;
+            updateRenderSize();
+        }
+    }
+    fprintf(stderr, "SHADERHOST: render scale %.2f -> %dx%d (surface %dx%d)\n",
+            g_renderScale, g_rw, g_rh, g_w, g_h);
+    g_resizePend = 0;
+
     // --- vulkan ---
     initVulkan();
     createSwapchain();
@@ -850,11 +967,19 @@ int main(int argc, char **argv) {
         }
 
         // resize handled by configure event -> rebuild swapchain
-        // (checked at top of loop via dispatch; if g_w/g_h changed we recreate)
+        if (g_resizePend) {
+            g_resizePend = 0;
+            vkDeviceWaitIdle(g_dev);
+            updateRenderSize();
+            if (g_viewport) wp_viewport_set_destination(g_viewport, g_w, g_h);
+            createSwapchain();
+            fprintf(stderr, "SHADERHOST: resized surface %dx%d, render %dx%d\n",
+                    g_w, g_h, g_rw, g_rh);
+        }
 
         // write UBO
         UBO ubo{}; memset(&ubo, 0, sizeof(ubo));
-        ubo.iResolution[0]=(float)g_w; ubo.iResolution[1]=(float)g_h; ubo.iResolution[2]=0.0f;
+        ubo.iResolution[0]=(float)g_rw; ubo.iResolution[1]=(float)g_rh; ubo.iResolution[2]=0.0f;
         ubo.iTime=(float)((double)(nowMs()-start)/1000.0);
         ubo.iFrame=(float)frame++;
         ubo.iMouse[0]=(float)g_mouseX; ubo.iMouse[1]=(float)g_mouseY;

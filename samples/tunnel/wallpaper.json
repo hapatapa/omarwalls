@@ -5,5 +5,6 @@
   "entry": "tunnel.frag",
   "preview": "preview.png",
   "author": "hapatapa",
-  "description": "Raymarched glowing tunnel with coloured light streams"
+  "description": "Raymarched glowing tunnel with coloured light streams",
+  "renderScale": 0.75
 }

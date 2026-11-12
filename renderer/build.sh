@@ -17,14 +17,22 @@ else
 fi
 
 # --- shader-host (Vulkan) ---
-if [[ "$FORCE" == "rebuild" || ! -x "$REPO/shader-host" || "$REPO/shader-host.cpp" -nt "$REPO/shader-host" ]]; then
+if [[ "$FORCE" == "rebuild" || ! -x "$REPO/shader-host" || "$REPO/shader-host.cpp" -nt "$REPO/shader-host" \
+      || "$REPO/viewporter-protocol.c" -nt "$REPO/shader-host" ]]; then
   cd "$REPO"
+  if [[ ! -f "$REPO/viewporter-protocol.c" || ! -f "$REPO/viewporter-client-protocol.h" ]]; then
+    wayland-scanner client-header /usr/share/wayland-protocols/stable/viewporter/viewporter.xml \
+      "$REPO/viewporter-client-protocol.h"
+    wayland-scanner private-code /usr/share/wayland-protocols/stable/viewporter/viewporter.xml \
+      "$REPO/viewporter-protocol.c"
+  fi
   TMPD="$(mktemp -d)"
   trap 'rm -rf "$TMPD"' EXIT
   gcc -O2 -c wlr-layer-shell-unstable-v1-protocol.c -o "$TMPD/wlr.o"
   gcc -O2 -c xdg-shell-protocol.c -o "$TMPD/xdg.o"
+  gcc -O2 -c viewporter-protocol.c -o "$TMPD/viewporter.o"
   g++ -std=c++17 -O2 -fPIC -I"$REPO" -o "$REPO/shader-host" \
-    "$REPO/shader-host.cpp" "$TMPD/wlr.o" "$TMPD/xdg.o" \
+    "$REPO/shader-host.cpp" "$TMPD/wlr.o" "$TMPD/xdg.o" "$TMPD/viewporter.o" \
     $(pkg-config --cflags --libs wayland-client shaderc) -lvulkan
   rm -rf "$TMPD"
   echo "shader-host built"
