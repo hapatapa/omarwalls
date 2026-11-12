@@ -84,13 +84,13 @@ void main() {
 
     o = lights * 0.0008;
 
-    o.x = o.x / (1.0 + o.x);
-    o.y = o.y / (1.0 + o.y);
-    o.z = o.z / (1.0 + o.z);
-
-    o.x = pow(o.x, 1.0 / 1.2);
-    o.y = pow(o.y, 1.0 / 1.2);
-    o.z = pow(o.z, 1.0 / 1.2);
+    // Hue-preserving tone map: scale all channels by one factor derived from
+    // the brightest one. Per-channel Reinhard (x/(1+x)) compresses the bright
+    // channel more than the others, which washes the accent out to grey/white
+    // exactly where the light streams are strongest.
+    float m = max(o.x, max(o.y, o.z));
+    m = max(m, 1e-6);
+    o.xyz *= pow(m / (1.0 + m), 1.0 / 1.2) / m;
 
     // deep background follows the theme without lifting the blacks too far
     o.xyz += u_background.rgb * 0.12;
